@@ -239,7 +239,7 @@ void frame()
 
 int main()
 {
-    std::println("Hello, world!");
+    SDL_SetHint("SDL_VIDEO_DRIVER", "wayland");
 
     SDL_Init(SDL_INIT_VIDEO);
 
