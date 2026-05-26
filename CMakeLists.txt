@@ -26,3 +26,5 @@ add_executable(launcher)
 target_compile_options(launcher PUBLIC -std=c++26)
 target_sources(launcher PUBLIC main.cpp)
 target_link_libraries(launcher PUBLIC SDL3 imgui PkgConfig::libgio2)
+
+install(TARGETS launcher RUNTIME DESTINATION bin)
