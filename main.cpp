@@ -262,6 +262,7 @@ int main()
             switch (event.type) {
                 break;case SDL_EVENT_QUIT:
                       case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                      case SDL_EVENT_WINDOW_FOCUS_LOST:
                     goto CLOSE;
             }
         }
