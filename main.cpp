@@ -12,6 +12,8 @@
 #include <gio/gio.h>
 #include <gio/gdesktopappinfo.h>
 
+#include <flat_set>
+
 template<typename Fn>
 struct DeferGuard
 {
@@ -23,13 +25,18 @@ struct DeferGuard
 
 #define defer DeferGuard _ = [&]
 
+static const std::flat_set<std::string_view> xwayland_blocklist = {
+    "Spotify (Launcher)",
+};
+
 struct WmLauncherApp
 {
-    GAppInfo* app_info;
+    GAppInfo* info;
     std::string display_name;
     std::string filter_string;
 
     bool shown;
+    bool block_xwayland;
 };
 
 static
@@ -42,7 +49,7 @@ struct {
 static
 void clear_apps()
 {
-    for (auto& entry : launcher.apps) g_object_unref(entry.app_info);
+    for (auto& entry : launcher.apps) g_object_unref(entry.info);
     launcher.apps.clear();
 }
 
@@ -108,15 +115,17 @@ void scan_apps()
         auto* desktop = G_DESKTOP_APP_INFO(app);
 
         auto& entry = launcher.apps.emplace_back();
-        entry.app_info = app;
+        entry.info = app;
         entry.display_name = g_app_info_get_display_name(app) ?: g_app_info_get_name(app);
 
         entry.filter_string += g_app_info_get_display_name(app) ?: "";
         entry.filter_string += '\0';
         entry.filter_string += g_app_info_get_executable(app);
 
+        entry.block_xwayland = xwayland_blocklist.contains(g_app_info_get_name(app));
+
         // TODO: Categories
-        // log_debug("Categories: {}", g_desktop_app_info_get_categories(desktop) ?: "");
+        // std::println("Categories: {}", g_desktop_app_info_get_categories(desktop) ?: "");
 
         for (auto* keyword = g_desktop_app_info_get_keywords(desktop); keyword && *keyword; ++keyword) {
             entry.filter_string += '\0';
@@ -150,16 +159,21 @@ void hide()
 static
 void launch(WmLauncherApp& app)
 {
-    auto* name = g_app_info_get_display_name(app.app_info) ?: g_app_info_get_name(app.app_info);
-    std::println("Running: {}", name);
-    std::println("  command line: {}", g_app_info_get_commandline(app.app_info) ?: "");
+    std::println("Running: {}", app.display_name);
+    std::println("  name: {}", g_app_info_get_name(app.info));
+    std::println("  command line: {}", g_app_info_get_commandline(app.info) ?: "");
 
     auto* ctx = g_app_launch_context_new();
     defer { g_object_unref(ctx); };
 
+    if (app.block_xwayland) {
+        std::println("  blocking XWayland socket");
+        g_app_launch_context_unsetenv(ctx, "DISPLAY");
+    }
+
     GError* err = nullptr;
-    if (!g_app_info_launch(app.app_info, nullptr, ctx, &err)) {
-        std::println("Error launching {}: {}", name, err->message);
+    if (!g_app_info_launch(app.info, nullptr, ctx, &err)) {
+        std::println("Error launching {}: {}", app.display_name, err->message);
     }
     hide();
 }
