@@ -1,6 +1,7 @@
 #include <print>
 #include <vector>
 #include <algorithm>
+#include <chrono>
 
 #include <SDL3/SDL.h>
 
@@ -13,6 +14,41 @@
 #include <gio/gdesktopappinfo.h>
 
 #include <flat_set>
+
+auto format_time(std::chrono::system_clock::time_point time) -> std::string
+{
+    time_t tt = std::chrono::system_clock::to_time_t(time);
+
+    tm tm = {};
+    localtime_r(&tt, &tm);
+
+    auto year  = tm.tm_year + 1900;
+    auto month = tm.tm_mon + 1;
+    auto msec  = std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()).count() % 1000;
+
+    static constexpr std::string_view weekdays[] = {
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    };
+
+    static constexpr auto day_suffix = [&](auto i) {
+        switch (i) {
+            break;case 1: case 21: case 31: return "st";
+            break;case 2: case 22:          return "nd";
+            break;case 3: case 23:          return "rd";
+            break;default:                  return "th";
+        }
+    };
+
+    return std::format("{} {}{} {:02}:{:02}",
+        weekdays[tm.tm_wday].substr(0, 3), tm.tm_mday, day_suffix(tm.tm_mday),
+        tm.tm_hour, tm.tm_min, tm.tm_sec);
+};
 
 template<typename Fn>
 struct DeferGuard
@@ -198,6 +234,16 @@ void frame()
     }
 
     auto& io = ImGui::GetIO();
+
+    // Time
+
+    {
+        // TODO: Refresh display on minute changes
+
+        auto now = std::chrono::system_clock::now();
+        ImGui::TextUnformatted(format_time(now).c_str());
+        ImGui::Separator();
+    }
 
     // Search bar
 
