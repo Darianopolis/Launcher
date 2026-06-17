@@ -72,21 +72,31 @@ struct WmLauncherApp
     std::string filter_string;
 
     bool shown;
+    size_t match_start;
+
     bool block_xwayland;
 };
 
 static
 struct {
-    std::vector<struct WmLauncherApp> apps;
+    std::vector<std::unique_ptr<WmLauncherApp>> apps;
     std::string filter;
-    const WmLauncherApp* selected = 0;
+    const WmLauncherApp* selected = nullptr;
 } launcher;
 
 static
 void clear_apps()
 {
-    for (auto& entry : launcher.apps) g_object_unref(entry.info);
+    for (auto& entry : launcher.apps) g_object_unref(entry->info);
     launcher.apps.clear();
+}
+
+static
+auto find_string(const std::string& haystack, std::string needle)
+{
+    return std::ranges::search(haystack, needle, [](char a, char b) {
+        return std::tolower(a) == std::tolower(b);
+    });
 }
 
 static
@@ -94,39 +104,72 @@ auto match_string(std::string haystack, std::string needle) -> bool
 {
     if (needle.empty()) return true;
 
-    auto it = std::ranges::search(haystack, needle, [](char a, char b) {
-        return std::tolower(a) == std::tolower(b);
-    });
-
-    return !it.empty();
+    return !find_string(haystack, needle).empty();
 }
 
 static
-void filter(bool up, bool down)
+void filter()
 {
-    const WmLauncherApp* first_matched = nullptr;
-    const WmLauncherApp* last_matched = nullptr;
+    // Match
+
     for (auto& app : launcher.apps) {
-        app.shown = match_string(app.filter_string, launcher.filter);
-
-        if (!app.shown) continue;
-
-        if (up && last_matched && &app == launcher.selected) {
-            launcher.selected = last_matched;
-            up = false;
+        if (launcher.filter.empty()) {
+            app->shown = true;
+            app->match_start = 0;
+        } else {
+            auto iter = find_string(app->filter_string, launcher.filter);
+            if (iter.empty()) {
+                app->shown = false;
+                app->match_start = 0;
+            } else {
+                app->shown = true;
+                app->match_start = iter.data() - app->filter_string.data();
+            }
         }
-
-        if (down && last_matched && last_matched == launcher.selected) {
-            launcher.selected = &app;
-            down = false;
-        }
-
-        if (!first_matched) first_matched = &app;
-        last_matched = &app;
+        app->shown = match_string(app->filter_string, launcher.filter);
     }
 
-    if (!launcher.selected || !launcher.selected->shown) {
-        launcher.selected = first_matched;
+    // Sort by earliest match, then lexicographically
+
+    std::ranges::sort(launcher.apps, [&](const auto& l, const auto& r) {
+        if (l->match_start != r->match_start) return l->match_start < r->match_start;
+        return l->display_name < r->display_name;
+    });
+
+    // Reset selected
+
+    launcher.selected = nullptr;
+    for (auto& app : launcher.apps) {
+        if (app->shown) {
+            launcher.selected = app.get();
+            break;
+        }
+    }
+}
+
+static
+void move_down()
+{
+    if (!launcher.selected) return;
+    auto iter = std::ranges::find(launcher.apps, launcher.selected, &std::unique_ptr<WmLauncherApp>::get);
+    while (++iter != launcher.apps.end()) {
+        if ((*iter)->shown) {
+            launcher.selected = iter->get();
+            return;
+        }
+    }
+}
+
+static
+void move_up()
+{
+    if (!launcher.selected) return;
+    auto iter = std::ranges::find(launcher.apps, launcher.selected, &std::unique_ptr<WmLauncherApp>::get);
+    while (iter-- != launcher.apps.begin()) {
+        if ((*iter)->shown) {
+            launcher.selected = iter->get();
+            return;
+        }
     }
 }
 
@@ -151,36 +194,35 @@ void scan_apps()
         auto* desktop = G_DESKTOP_APP_INFO(app);
 
         auto& entry = launcher.apps.emplace_back();
-        entry.info = app;
-        entry.display_name = g_app_info_get_display_name(app) ?: g_app_info_get_name(app);
+        entry = std::make_unique<WmLauncherApp>();
+        entry->info = app;
+        entry->display_name = g_app_info_get_display_name(app) ?: g_app_info_get_name(app);
 
-        entry.filter_string += g_app_info_get_display_name(app) ?: "";
-        entry.filter_string += '\0';
-        entry.filter_string += g_app_info_get_executable(app);
+        entry->filter_string += g_app_info_get_display_name(app) ?: "";
+        entry->filter_string += '\0';
+        entry->filter_string += g_app_info_get_executable(app);
 
-        entry.block_xwayland = xwayland_blocklist.contains(g_app_info_get_name(app));
+        entry->block_xwayland = xwayland_blocklist.contains(g_app_info_get_name(app));
 
         // TODO: Categories
         // std::println("Categories: {}", g_desktop_app_info_get_categories(desktop) ?: "");
 
         for (auto* keyword = g_desktop_app_info_get_keywords(desktop); keyword && *keyword; ++keyword) {
-            entry.filter_string += '\0';
-            entry.filter_string += *keyword;
+            entry->filter_string += '\0';
+            entry->filter_string += *keyword;
         }
 
         std::string_view id = g_app_info_get_id(app) ?: "";
         if (id.ends_with(".desktop")) {
             id.remove_suffix(strlen(".desktop"));
         }
-        entry.filter_string += '\0';
-        entry.filter_string += id;
+        entry->filter_string += '\0';
+        entry->filter_string += id;
 
         app = nullptr;
     }
 
-    std::ranges::sort(launcher.apps, std::less{}, &WmLauncherApp::display_name);
-
-    filter(false, false);
+    filter();
 }
 
 static
@@ -254,8 +296,11 @@ void frame()
     bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow);
     if (up && down) { up = down = false; }
     ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
-    if (ImGui::InputTextWithHint("##filter", "Search applications...", &launcher.filter) || up || down) {
-        filter(up, down);
+    bool text_update = ImGui::InputTextWithHint("##filter", "Search applications...", &launcher.filter);
+    if (text_update || up || down) {
+        if (text_update) filter();
+        if (up) move_up();
+        if (down) move_down();
         check_scroll = true;
     }
     ImGui::PopItemWidth();
@@ -268,9 +313,9 @@ void frame()
     bool mouse_moving = io.MouseDelta.x || io.MouseDelta.y || io.MouseWheel;
 
     for (auto& app : launcher.apps) {
-        if (!app.shown) continue;
+        if (!app->shown) continue;
 
-        bool highlight = &app == launcher.selected;
+        bool highlight = app.get() == launcher.selected;
 
         int select_flags = 0;
         select_flags |= ImGuiSelectableFlags_AllowDoubleClick;
@@ -278,9 +323,9 @@ void frame()
         if (!highlight) ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
 
         bool selected = highlight && ImGui::IsKeyPressed(ImGuiKey_Enter, false);
-        ImGui::Selectable(app.display_name.c_str(), selected, select_flags);
+        ImGui::Selectable(app->display_name.c_str(), selected, select_flags);
         if (selected || (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))) {
-            launch(app);
+            launch(*app);
         }
 
         if (!highlight) ImGui::PopStyleColor();
@@ -288,7 +333,7 @@ void frame()
         // Only update highlight from hover if mouse is moving/scrolling
         if (ImGui::IsItemHovered() && mouse_moving) {
             highlight = true;
-            launcher.selected = &app;
+            launcher.selected = app.get();
         }
 
         if (highlight && check_scroll) {
@@ -311,7 +356,6 @@ int main()
     ImGui_ImplSDLRenderer3_Init(renderer);
 
     scan_apps();
-    filter(false, false);
 
     SDL_Event event;
     for (;;) {
