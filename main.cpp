@@ -348,7 +348,7 @@ int main()
 
     SDL_Init(SDL_INIT_VIDEO);
 
-    auto window = SDL_CreateWindow("Launcher", 800, 600, SDL_WINDOW_RESIZABLE);
+    auto window = SDL_CreateWindow("Launcher", 800, 600, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN);
     auto renderer = SDL_CreateRenderer(window, nullptr);
 
     ImGui::CreateContext();
@@ -384,6 +384,7 @@ int main()
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
 
         SDL_RenderPresent(renderer);
+        SDL_ShowWindow(window);
     }
 CLOSE:
 }
